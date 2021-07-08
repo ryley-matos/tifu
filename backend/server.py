@@ -1,3 +1,6 @@
+from gevent import monkey
+monkey.patch_all()
+
 import praw
 import random
 import os
@@ -12,7 +15,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 load_dotenv()
 
 app = Flask(__name__, static_folder='./ui', static_url_path='/')
-socketio = SocketIO(app, host="0.0.0.0", cors_allowed_origins="*")
+socketio = SocketIO(app, host="0.0.0.0", cors_allowed_origins="*", message_queue=os.environ['REDIS_URL'])
 
 redis_cache = redis.from_url(os.environ['REDIS_URL'], charset="utf-8", decode_responses=True)
 
