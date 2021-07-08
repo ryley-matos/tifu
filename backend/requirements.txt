@@ -8,6 +8,8 @@ click==7.1.2
 click-didyoumean==0.0.3
 click-plugins==1.1.1
 click-repl==0.2.0
+dnspython==1.16.0
+eventlet==0.31.0
 Flask==2.0.1
 Flask-Cors==3.0.10
 Flask-SocketIO==5.1.0

@@ -1,5 +1,5 @@
-from gevent import monkey
-monkey.patch_all()
+import eventlet
+eventlet.monkey_patch()
 
 import praw
 import random
@@ -15,7 +15,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 load_dotenv()
 
 app = Flask(__name__, static_folder='./ui', static_url_path='/')
-socketio = SocketIO(app, host="0.0.0.0", cors_allowed_origins="*", message_queue=os.environ['REDIS_URL'])
+socketio = SocketIO(app, host="0.0.0.0", cors_allowed_origins="*", message_queue=os.environ['REDIS_URL'], async_mode='eventlet')
 
 redis_cache = redis.from_url(os.environ['REDIS_URL'], charset="utf-8", decode_responses=True)
 
@@ -207,4 +207,4 @@ def game_room(game_id):
     return app.send_static_file('index.html')
 
 if __name__ == '__main__':
-    socketio.run(app, host="0.0.0.0", port=(os.environ['PORT'] if 'PORT' in os.environ else 5000), message_queue=os.environ['REDIS_URL'])
+    socketio.run(app, host="0.0.0.0", port=(os.environ['PORT'] if 'PORT' in os.environ else 5000))
