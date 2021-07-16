@@ -75,7 +75,7 @@ class RedisObject():
 
         setattr(self, '_get_%s' % key, getFunc)
         setattr(self, '_%s_%s' % ('set' if one_or_many == RedisObject.ONE else 'add_to', key), setFunc)
-        setattr(self, '_%s_%s' % ('remove' if one_or_many == RedisObject.ONE else 'remove_from', key), setFunc)
+        setattr(self, '_%s_%s' % ('remove' if one_or_many == RedisObject.ONE else 'remove_from', key), deleteFunc)
 
 class Player(RedisObject):
     KEYS = {
@@ -96,8 +96,9 @@ class Answer(RedisObject):
 class Game(RedisObject):
     DRAW_DURATION = 45
     WRITE_DURATION = 30
-    STATE_DRAW = Answer.IMAGE_DATA
-    STATE_WRITE = Answer.PHRASE
+    STATE_DRAW = 0
+    STATE_WRITE = 1
+    STATE_VIEW = 2
 
     KEYS = {
         'current_player': (RedisObject.ONE, str),
