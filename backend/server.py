@@ -81,76 +81,102 @@ class Player(RedisObject):
     KEYS = {
         'name': (RedisObject.ONE, str),
         'answer_id': (RedisObject.ONE, str),
-        'score': (RedisObject.ONE, int)
     }
-
-    def addPoint(self):
-        score = self._get_score() or 0
-        score += 1
-        self._set_score(score)
 
 class Answer(RedisObject):
+    IMAGE_DATA = 0
+    PHRASE = 1
+
     KEYS = {
         'player_id': (RedisObject.ONE, str),
-        'content': (RedisObject.ONE, str)
+        'content': (RedisObject.ONE, str),
+        'image_or_phrase': (RedisObject.ONE, int)
     }
-    
-    def selectAsWinner(self):
-        p = Player(self._get_player_id())
-        p.addPoint()
 
 class Game(RedisObject):
-    DRAW_DURATION = 60
-    VOTE_DURATION = 30
-    STATE_WAIT = 0
-    STATE_DRAW = 1
-    STATE_VOTE = 2
+    DRAW_DURATION = 45
+    WRITE_DURATION = 30
+    STATE_DRAW = Answer.IMAGE_DATA
+    STATE_WRITE = Answer.PHRASE
 
     KEYS = {
-        'artist': (RedisObject.ONE, str),
+        'current_player': (RedisObject.ONE, str),
         'players': (RedisObject.MANY, str),
         'post': (RedisObject.ONE, str),
         'state': (RedisObject.ONE, int),
-        'answers': (RedisObject.MANY, str)
+        'answers': (RedisObject.MANY, str),
+        'admin': (RedisObject.ONE, str)
     }
-
-    def newRound(self):
-        #get random artist
-        artist_candidates = [
-            player for player in self._get_players() if player != self._get_artist()
-        ]
-        self._set_artist(artist_candidates[random.randint(0, len(artist_candidates) - 1)])
-        emit('new_artist', self._get_artist(), room=self.id)
-        
-        #get random post
-        random_post = posts[random.randint(0, len(posts) - 1)].title
-        self._set_post(random_post)
-        emit('new_post', random_post, room=self._get_artist())
-
-        self._set_state(Game.STATE_WAIT)
-        emit('state_change', Game.STATE_WAIT, room=self.id)
-
-    def getAnswerMap(self):
-        answers = [Answer(a_id) for a_id in self._get_answers()]
-        return {answer.id : answer._get_content() for answer in answers}
 
     def getPlayerMap(self):
         players = [Player(p_id) for p_id in self._get_players()]
         return {player.id : player._get_name() for player in players}
 
-def start_game(game_id):
+    def getAnswerMap(self):
+        answers = [Answer(a_id) for a_id in self._get_answers()]
+        return {answer.id: answer._get_player_id() for answer in answers}
+
+    def nextStep(self):
+        answerMap = self.getAnswerMap()
+        players = self._get_players()
+        uneligiblePlayers = [answerMap[key] for key in answerMap]
+        eligblePlayers = [player for player in players if player not in uneligiblePlayers]
+        if not eligblePlayers:
+            return False
+        state = self._get_state()
+        self._set_current_player(eligblePlayers[random.randint(0, len(eligblePlayers) - 1)])
+        self._set_state(self.STATE_DRAW if state == self.STATE_WRITE else self.STATE_WRITE)
+        return True
+        
+    def newRound(self):
+        answers = self._get_answers()
+        for answer in answers:
+            self._remove_from_answers(answer)
+
+        random_post = posts[random.randint(0, len(posts) - 1)].title
+        players = self._get_players()
+
+        self._set_current_player(players[random.randint(0, len(players) - 1)])
+        self._set_post(random_post)
+        self._set_state(self.STATE_DRAW)
+
+@socketio.on('answer')
+def handle_answer(data):
+    game_id = data['game_id']
     g = Game(game_id)
+    if (request.sid == g._get_current_player()): #user allowed to answer
+        a_uuid = uuid.uuid4().hex
+        a = Answer(a_uuid)
+        a._set_image_or_phrase(g._get_state())
+        a._set_player_id(request.sid)
+        a._set_content(data['content'])
+        g._add_to_answers(a_uuid)
+        if (not g.nextStep()):
+            emit('game_end', room=game_id)
+        else:
+            player_id = g._get_current_player()
+            payload = {
+                'state': g._get_state(),
+                'answer': a._get_content()
+            }
+            emit('next_player', player_id, room=game_id)
+            emit('next_step', payload, room=player_id)
 
-    g._set_state(Game.STATE_DRAW)
-    emit('state_change', Game.STATE_DRAW, room=game_id)
-    socketio.sleep(Game.DRAW_DURATION)
+@socketio.on('start_game')
+def start_game(data):
+    game_id = data['game_id']
+    g = Game(game_id)
+    if (request.sid == g._get_admin()):
+        g.newRound()
+        payload = {
+            'state': g._get_state(),
+            'answer': g._get_post()
+        }
+        player_id = g._get_current_player()
+        emit('next_player', player_id, room=game_id)
+        emit('next_step', payload, room=player_id)
+        emit('game_start', room=game_id)
 
-    g._set_state(Game.STATE_VOTE)
-    emit('state_change', Game.STATE_VOTE, room=game_id)
-    emit('answers_in', g.getAnswerMap(), room=game_id)
-    socketio.sleep(Game.VOTE_DURATION)
-    7
-    g.newRound()
 
 @socketio.on('join')
 def join_game(data):
@@ -161,50 +187,11 @@ def join_game(data):
     g = Game(game_id)
     p = Player(request.sid)
     p._set_name(name)
-    if not g._get_players():
-        g._add_to_players(request.sid)
-        g.newRound()
-    else:
-        g._add_to_players(request.sid)
+    g._add_to_players(request.sid)
+    if (not g._get_admin()):
+        g._set_admin(request.sid)
+        emit('admin', room=(request.sid))
     emit('players_update', g.getPlayerMap(), room=game_id)
-
-@socketio.on('draw')
-def handle_draw(data):
-    g = Game(data['game_id'])
-    if (request.sid == g._get_artist()):
-        if (not g._get_state()):
-            start_game(data['game_id'])
-        elif (g._get_state() == Game.STATE_DRAW):
-            emit('draw', data['points'], room=data['game_id'])
-
-@socketio.on('answer')
-def handle_answer(data):
-    g = Game(data['game_id'])
-    p = Player(request.sid)
-    if (request.sid != g._get_artist() and g._get_state() == Game.STATE_DRAW and not p._get_answer_id()):
-        ans_uuid = uuid.uuid4().hex
-        p._set_answer_id(ans_uuid)
-        a = Answer(ans_uuid)
-        a._set_player_id(request.sid)
-        a._set_content(data['content'])
-        g._add_to_answers(ans_uuid)
-
-@socketio.on('vote')
-def handle_vote(data):
-    g = Game(data['game_id'])
-    if (request.sid == g._get_artist() and g._get_state() == Game.STATE_VOTE):
-        a = Answer(data['answer_id'])
-        a.selectAsWinner()
-
-@app.route('/')
-@cross_origin()
-def index():
-    return redirect('/%s' % uuid.uuid4().hex)
-
-@app.route('/<game_id>')
-@cross_origin()
-def game_room(game_id):
-    return app.send_static_file('index.html')
 
 if __name__ == '__main__':
     socketio.run(app, host="0.0.0.0", port=(os.environ['PORT'] if 'PORT' in os.environ else 5000))
