@@ -3,6 +3,7 @@ import './App.css';
 import io from 'socket.io-client';
 
 import { useEffect, useState, useRef } from 'react'
+import React from 'react'
 import { useHistory, useLocation } from 'react-router-dom';
 
 import { Container, Text, Input, Modal, ModalContent, ModalOverlay, Center, Button } from "@chakra-ui/react"
@@ -26,8 +27,7 @@ const Answer = ({game_id}) => {
   )
 }
 
-const Whiteboard = ({game_id, remoteDraw=false}) => {
-  const canvasRef = useRef()
+const Whiteboard = React.forwardRef((props, canvasRef) => {
   const [marking, setMarking] = useState(false)
   const [{lastX, lastY}, setLastMark] = useState(DEF_XY)
   const [{width, height}, setDimensions] = useState({width: 500, height: 500})
@@ -48,7 +48,6 @@ const Whiteboard = ({game_id, remoteDraw=false}) => {
   }
 
 
-
   const drawLine = ({x0, y0, x1, y1}) => {
     const ctx = canvasRef?.current?.getContext('2d')
     ctx.strokeStyle = '#000000';
@@ -60,17 +59,6 @@ const Whiteboard = ({game_id, remoteDraw=false}) => {
     ctx.stroke();
   }
 
-  useEffect(() => {
-    if (remoteDraw) {
-      socket.on('draw', (points) => drawLine(points))
-    }
-    return () => {
-      socket.off('draw')
-    }
-  }, [remoteDraw])
-
-
-
   return (
     <div>
       <canvas 
@@ -81,12 +69,11 @@ const Whiteboard = ({game_id, remoteDraw=false}) => {
         onMouseDown={startMarking}
         onMouseUp={endMarking}
         onMouseMove={(e) => {
-          if (!marking || remoteDraw)
+          if (!marking)
             return
           const offset = canvasRef?.current?.getBoundingClientRect()
           const {xn: x0, yn: y0} = normalize(lastX, lastY)
           const {xn: x1, yn: y1} = normalize(e.clientX - offset.left, e.clientY - offset.top)
-          socket.emit('draw', {game_id, points: {x0, y0, x1,  y1}})
           drawLine({x0, y0, x1,  y1})
           setLastMark({
             lastX: e.clientX - offset.left,
@@ -97,30 +84,47 @@ const Whiteboard = ({game_id, remoteDraw=false}) => {
       />
     </div>
   )
-}
+})
 
-const STATE_WAITING = 0
-const STATE_DRAWING = 1
-const STATE_VOTING = 2
+const STATE_DRAW = 0
+const STATE_WRITE = 1
+
+const PlayerList = ({map}) => {
+  return (
+    <div>
+      {Object.entries(map).map(([key, value]) => <div>{value}</div>)}
+    </div>
+  )
+}
 
 const Game = ({id}) => {
   const [socketId, setSocketId] = useState(null)
-  const [artistId, setArtistId] = useState(null)
-  const [post, setPost] = useState('')
+  const [currentPlayerId, setCurrentPlayerId] = useState(null)
+  const [answer, setAnswer] = useState('')
   const [state, setState] = useState()
-  const [alertSeen, setAlertSeen] = useState(false)
-
-  const isArtist = socketId && socketId == artistId
+  const [admin, setAdmin] = useState(false)
+  const [playerMap, setPlayerMap] = useState({})
+  const [gameStarted, setGameStarted] = useState(false)
+  const [phrase, setPhrase] = useState('')
+  const canvasRef = useRef()
 
   useEffect(() => {
     if (id) {
-      socket.on('new_artist', id => setArtistId(id))
-      socket.on('new_post', (post) => setPost(post))
-      socket.on('state_change', (state) => setState(state))
+      socket.on('next_player', nextPlayerId => setCurrentPlayerId(nextPlayerId))
+      socket.on('next_step', ({answer, state}) => {
+        setAnswer(answer)
+        setState(state)
+      })
+      socket.on('admin', () => setAdmin(true))
+      socket.on('players_update', playerMap => setPlayerMap(playerMap))
+      socket.on('game_start', () => setGameStarted(true))
+      socket.on('game_end', () => setGameStarted(false))
       socket.emit('join', {game_id: id, name: 'test_name'})
       return () => {
-        socket.off('new_artist')
-        socket.off('new_post')
+        socket.off('next_player')
+        socket.off('next_step')
+        socket.off('admin')
+        socket.off('players_update')
       }
     }
   }, [id])
@@ -132,57 +136,49 @@ const Game = ({id}) => {
     }
   }, [])
 
-  useEffect(() => {
-    if (isArtist) {
-      setAlertSeen(false)
-    }
-  }, [isArtist])
+  if (admin && !gameStarted) {
+    return (
+      <div>
+        <PlayerList map={playerMap}/>
+        <button onClick={() => socket.emit('start_game', {game_id: id})}>
+          Start Game
+        </button>
+      </div>
+    )
+  }
 
-  return (
-    <Container>
-      <Whiteboard game_id={id} remoteDraw={!isArtist}/>
-      <Modal isOpen={(isArtist && !alertSeen)}>
-      <ModalOverlay/>
-        <ModalContent p={12}>
-          <Center>
-              <Text fontSize="128px">
-                🎨
-              </Text>
-          </Center>
-          <Center>
-            <Text
-              bgGradient="linear(to-l, #000000,#FF0000)"
-              bgClip="text"
-              fontSize="4xl"
-              fontWeight="extrabold"
-            >
-              you are the artist
-            </Text>
-          </Center>
-          <Center>
-            <Button onClick={() => setAlertSeen(true)}>
-              start
-            </Button>
-          </Center>
-        </ModalContent>
-      </Modal>
-      <Text
-        bgGradient="linear(to-l, #000000,#FF0000)"
-        bgClip="text"
-        fontSize="4xl"
-        fontWeight="extrabold"
-      >
-        r/tifu...
-      </Text>
-      {isArtist ?
+  if (!gameStarted) {
+    return <div>Waiting for game to start...</div>
+  }
+
+  if (socketId != currentPlayerId) {
+    return <div>Waiting for your turn...</div>
+  }
+
+  if (socketId == currentPlayerId) {
+    if (state == STATE_DRAW) {
+      return (
         <div>
-          <Text>{post.toLowerCase().replace('tifu ', '')}</Text>
+          <Whiteboard ref={canvasRef}/>
+          <div>{answer}</div>
+          <button onClick={() => socket.emit('answer', {game_id: id, content: canvasRef.current.toDataURL()})}>Submit</button>
         </div>
-      :
-        <Answer game_id={id}/>
-      }
-    </Container>
-  )
+      )
+    }
+    else {
+      return (
+        <div>
+          <img src={answer}/>
+          <input placeholder="enter your best guess..." onChange={e => setPhrase(e.target.value)}/>
+          <button onClick={() => socket.emit('answer', {game_id: id, content: phrase})}>Submit</button>
+        </div>
+      )
+    }
+  }
+
+
+
+  return null
 }
 
 function App() {
